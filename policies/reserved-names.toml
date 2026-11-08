@@ -1,0 +1,14 @@
+# Publisher identities are checked on every record. The GitHub PR author's
+# numeric account ID is checked against the base branch for new releases.
+[namespaces.mio]
+publishers = ["github:mio-kobo"]
+submitter_ids = [72144156]
+
+[namespaces.kiso]
+publishers = ["github:mio-kobo"]
+submitter_ids = [72144156]
+
+# Reserved for future first-party use.
+[namespaces.bunko]
+publishers = []
+submitter_ids = []

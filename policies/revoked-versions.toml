@@ -1,0 +1,3 @@
+# Map an exact published name@version to a public advisory URL.
+# Keep the release file in packages/ when revoking a version.
+[revoked]

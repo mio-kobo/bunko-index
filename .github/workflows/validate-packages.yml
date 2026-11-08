@@ -1,0 +1,44 @@
+name: Validate packages
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Bunko index
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.12'
+      - name: Check the proposed index with the base branch validator
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: |
+          set -euo pipefail
+          if git cat-file -e "$BASE_SHA:tools/validate.py" 2>/dev/null; then
+            trusted_dir="$(mktemp -d "$RUNNER_TEMP/bunko-base.XXXXXX")"
+            git archive "$BASE_SHA" tools schemas policies | tar -x -C "$trusted_dir"
+            python -I "$trusted_dir/tools/validate.py" --root "$GITHUB_WORKSPACE" \
+              --base "$BASE_SHA" --candidate HEAD --author-id "$PR_AUTHOR_ID" --github
+          else
+            echo "The base branch does not have the Bunko validator yet."
+          fi
+      - name: Check the proposed index with the proposed rules
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: |
+          python -I tools/validate.py --base "$BASE_SHA" --candidate HEAD \
+            --author-id "$PR_AUTHOR_ID" --github
+      - name: Run validator tests
+        run: python -I -m unittest discover -s tests -v
