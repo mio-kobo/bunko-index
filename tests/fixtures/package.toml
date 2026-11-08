@@ -1,0 +1,16 @@
+name = "alice/json"
+version = "1.0.0"
+publisher = "github:alice"
+description = "A sample JSON parser for validator tests."
+repository = "https://github.com/alice/json"
+source_commit = "0123456789abcdef0123456789abcdef01234567"
+release_id = "123456"
+archive = "https://api.github.com/repos/alice/json/releases/assets/789012"
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+license = "MIT"
+
+[mio]
+min = "2.0.0"
+before = "3.0.0"
+
+[dependencies]

@@ -1,0 +1,10 @@
+# Patterns match the entire namespace. Distance applies to namespaces only.
+[visual_patterns]
+mio = '[m][i1l][o0]'
+kiso = 'k[i1l][s5][o0]'
+bunko = 'b[u][n][k][o0]'
+
+[edit_distance]
+mio = 1
+kiso = 1
+bunko = 1
