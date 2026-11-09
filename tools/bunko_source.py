@@ -23,6 +23,9 @@ MAX_TOOLCHAIN_BYTES = 128 * 1024 * 1024
 MAX_JSON_BYTES = 4 * 1024 * 1024
 TIMEOUT = 60
 ASSET_ID = re.compile(r"https://api\.github\.com/repos/([a-z0-9-]+)/([A-Za-z0-9_.-]+)/releases/assets/([1-9][0-9]{0,19})")
+# GitHub's API echoes the canonical owner/repository capitalization, so the URL it returns may differ in
+# case from the lowercase owner in the package record. Owner and repository names are case-insensitive.
+API_ASSET_URL = re.compile(r"https://api\.github\.com/repos/([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)/releases/assets/([1-9][0-9]{0,19})")
 REPOSITORY = re.compile(r"https://github\.com/([a-z0-9-]+)/([A-Za-z0-9_.-]+)")
 DOWNLOAD_HOSTS = ("github.com", ".githubusercontent.com")
 
@@ -116,6 +119,16 @@ def _require(condition, message):
         raise SourceError(message)
 
 
+def asset_identity(url):
+    """Return (owner, repository, asset id) for an API asset URL, or None if it is not exactly one.
+
+    Everything except the owner and repository capitalization is matched strictly: scheme, host,
+    path shape, numeric asset ID, and no credentials, port, query or fragment.
+    """
+    match = API_ASSET_URL.fullmatch(url) if isinstance(url, str) else None
+    return (match[1].lower(), match[2].lower(), int(match[3])) if match else None
+
+
 def verify_release(record, fetcher):
     """Check the immutable release, asset identity and source commit for one record."""
     repository = REPOSITORY.fullmatch(record["repository"])
@@ -134,7 +147,9 @@ def verify_release(record, fetcher):
     assets = [a for a in release.get("assets", []) if isinstance(a, dict) and a.get("id") == asset_id]
     _require(len(assets) == 1, f"{label}: asset {asset_id} is not part of release {record['release_id']}")
     asset = assets[0]
-    _require(asset.get("url") == record["archive"], f"{label}: asset URL differs from the recorded archive")
+    identity = asset_identity(asset.get("url"))
+    _require(identity is not None and identity == asset_identity(record["archive"]),
+             f"{label}: asset URL differs from the recorded archive")
     _require(str(asset.get("name", "")).endswith(".tar.gz"), f"{label}: asset is not a .tar.gz archive")
     _require(asset.get("state", "uploaded") == "uploaded", f"{label}: asset is not fully uploaded")
     size = asset.get("size")
