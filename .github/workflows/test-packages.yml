@@ -1,0 +1,134 @@
+name: Test packages
+
+# Tests newly added package versions on GitHub-hosted runners only.
+#
+# - Triggered by pull_request (never pull_request_target) with a read-only token
+#   and no secrets. Fork PRs get the same restrictions.
+# - Orchestration code (tools/, policies/, schemas/) is taken from the PR's base
+#   commit. Publishers control only the immutable release archive.
+# - The package tests run in a step that is given no credentials.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-packages-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Plan package tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_packages: ${{ steps.plan.outputs.has_packages }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.12'
+      - name: Build the matrix from newly added package records
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+        run: |
+          set -euo pipefail
+          if ! git cat-file -e "$BASE_SHA:tools/bunko_ci.py" 2>/dev/null; then
+            echo "The base branch does not have the package test tooling yet; nothing to test."
+            echo 'matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo 'has_packages=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          trusted_dir="$(mktemp -d "$RUNNER_TEMP/bunko-base.XXXXXX")"
+          git archive "$BASE_SHA" tools schemas policies | tar -x -C "$trusted_dir"
+          python -I "$trusted_dir/tools/validate.py" --root "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --candidate HEAD --author-id "$PR_AUTHOR_ID" --github
+          python -I "$trusted_dir/tools/bunko_ci.py" plan --root "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" --head HEAD
+
+  test:
+    name: ${{ matrix.label }}
+    needs: plan
+    if: needs.plan.outputs.has_packages == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out trusted tooling from the base commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the proposed index
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.12'
+      - name: Verify and unpack the release, its dependencies and the compiler
+        env:
+          # Read-only, repository-scoped. Used only for public GitHub API reads,
+          # and this step never executes package code.
+          GH_TOKEN: ${{ github.token }}
+          RECORD: ${{ matrix.record }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          python -I trusted/tools/bunko_ci.py prepare --root candidate \
+            --record "$RECORD" --target "$TARGET" --work "$RUNNER_TEMP/bunko-work"
+      - name: Run the package tests with Mio
+        run: python -I trusted/tools/bunko_ci.py run --work "$RUNNER_TEMP/bunko-work"
+
+  tooling:
+    name: Test tooling (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, windows-2025]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13.12'
+      - name: Test archive, provenance and report handling against the pinned Mio compiler
+        env:
+          BUNKO_MIO_INTEGRATION: '1'
+        run: python -I -m unittest discover -s tests -p "test_[bm]*.py" -v
+
+  result:
+    name: Package tests
+    needs: [plan, test, tooling]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every package job to pass
+        env:
+          PLAN: ${{ needs.plan.result }}
+          TEST: ${{ needs.test.result }}
+          TOOLING: ${{ needs.tooling.result }}
+        run: |
+          echo "plan=$PLAN test=$TEST tooling=$TOOLING"
+          [ "$PLAN" = success ] && [ "$TOOLING" = success ] && { [ "$TEST" = success ] || [ "$TEST" = skipped ]; }
