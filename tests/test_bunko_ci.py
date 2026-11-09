@@ -412,6 +412,62 @@ class SourceTests(unittest.TestCase):
         with self.assertRaisesRegex(source.SourceError, "digest"):
             source.verify_release(record, self.fetcher)
 
+    def test_asset_url_owner_and_repository_case_is_ignored(self):
+        record = self.record()
+        url = f"https://api.github.com/repos/alice/json/releases/{record['release_id']}"
+        asset = self.fetcher.documents[url]["assets"][0]
+        base = "https://api.github.com/repos/{}/releases/assets/" + str(asset["id"])
+        for names in ("Alice/json", "alice/JSON", "ALICE/Json"):
+            asset["url"] = base.format(names)
+            source.verify_release(record, self.fetcher)
+
+    def test_rejects_asset_url_for_another_owner_repository_or_asset(self):
+        record = self.record()
+        url = f"https://api.github.com/repos/alice/json/releases/{record['release_id']}"
+        asset = self.fetcher.documents[url]["assets"][0]
+        base = "https://api.github.com/repos/{}/releases/assets/{}"
+        for names, number in (("bob/json", asset["id"]), ("alice/yaml", asset["id"]),
+                              ("Bob/Json", asset["id"]), ("Alice/Json", asset["id"] + 1)):
+            asset["url"] = base.format(names, number)
+            with self.assertRaisesRegex(source.SourceError, "asset URL differs"):
+                source.verify_release(record, self.fetcher)
+
+    def test_rejects_malformed_or_unsafe_asset_urls(self):
+        record = self.record()
+        url = f"https://api.github.com/repos/alice/json/releases/{record['release_id']}"
+        asset = self.fetcher.documents[url]["assets"][0]
+        good = f"https://api.github.com/repos/alice/json/releases/assets/{asset['id']}"
+        bad = [
+            good.replace("https:", "http:"),
+            good.replace("api.github.com", "github.com"),
+            good.replace("api.github.com", "API.github.com"),
+            good.replace("api.github.com", "api.github.com.evil.test"),
+            good.replace("api.github.com", "user@api.github.com"),
+            good.replace("api.github.com", "api.github.com:443"),
+            good + "?x=1", good + "#frag", good + "/", good + "\n", " " + good,
+            good.replace("/assets/", "/asset/"),
+            good.replace("/releases/", "/release/"),
+            good.replace("/repos/", "/users/"),
+            good.replace("alice/json", "alice"),
+            good.replace("alice/json", "alice/json/extra"),
+            good.replace("alice", "al/../ice"),
+            good.replace(str(asset["id"]), "0" + str(asset["id"])),
+            good.replace(str(asset["id"]), "abc"),
+            "", "not a url", None, 5, [good],
+        ]
+        for value in bad:
+            asset["url"] = value
+            with self.assertRaisesRegex(source.SourceError, "asset URL differs", msg=repr(value)):
+                source.verify_release(record, self.fetcher)
+        asset.pop("url")
+        with self.assertRaisesRegex(source.SourceError, "asset URL differs"):
+            source.verify_release(record, self.fetcher)
+
+    def test_asset_identity_normalizes_only_owner_and_repository_case(self):
+        self.assertEqual(source.asset_identity("https://api.github.com/repos/ExMikuPro/MioBench/releases/assets/7"),
+                         ("exmikupro", "miobench", 7))
+        self.assertIsNone(source.asset_identity("https://api.github.com/repos/a/b/releases/assets/7?x"))
+
     def test_toolchain_checksum_is_pinned(self):
         rules = fake_toolchain(self.fetcher)
         source.fetch_toolchain(rules["linux/x86_64"], self.fetcher, self.dest)
