@@ -9,7 +9,7 @@ Each release is a UTF-8 TOML file at
 `packages/<namespace>/<package>/<version>.toml`. The index opens empty, and the
 first accepted package adds the `packages/` tree. The metadata includes publisher
 identity, an upstream source commit and immutable release asset, SHA-256, license,
-compiler compatibility, and exact dependencies. See the
+compiler compatibility, supported platforms, and exact dependencies. See the
 [package format](docs/package-format.md) for a field reference.
 
 Community packages use `publisher/package`. The publisher portion is the lowercase
@@ -25,6 +25,14 @@ revoked through a separate policy file. CI checks the proposed index and
 maintainers verify publisher authority, provenance, archive contents, and
 naming warnings before approving. See the [contribution guide](CONTRIBUTING.md).
 
+Every record has a required `[platforms]` table listing the operating systems
+(`linux`, `macos`, `windows`) and CPU architectures (`x86_64`, `arm64`) it
+supports. Anything not listed is unsupported, and there are no wildcards,
+aliases or defaults. Pull requests that add a record are tested automatically
+on the declared targets with the pinned Mio compiler on GitHub-hosted runners;
+see [testing packages](docs/testing.md). Compiler-version compatibility (`[mio]`)
+is separate from platform compatibility.
+
 Bunko v1 accepts Mio source packages. Install scripts, arbitrary build scripts,
 and native binaries are prohibited. Projects declare exact direct dependencies
 and use a shared global cache without a lock file. Each project can use one
@@ -39,6 +47,9 @@ python3 tools/validate.py
 python3 tools/validate.py --base origin/main
 python3 -m unittest discover -s tests -v
 ```
+
+Set `BUNKO_MIO_INTEGRATION=1` to also run the tests that download the pinned
+Mio v2.1.0 compiler for your platform and exercise it end to end.
 
 The [third-party index policy](docs/third-party-indexes.md) describes the rules
 for admission to the official index and the intended boundaries for future taps.

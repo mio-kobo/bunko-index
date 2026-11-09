@@ -1,0 +1,31 @@
+# Targets that Bunko V1 accepts in [platforms] and tests in CI.
+#
+# A target is added only after verifying that an official Mio compiler exists
+# for it and that a GitHub-hosted runner can execute that compiler natively.
+# Mio names its release assets linux-amd64, darwin-arm64 and windows-amd64;
+# Bunko metadata uses the canonical linux/x86_64, macos/arm64 and
+# windows/x86_64 spellings. This file is the only place the two are mapped.
+#
+# mio_sha256 values come from the immutable mio-kobo/mio v2.1.0 release's
+# SHA256SUMS asset and were checked against the downloaded files.
+
+[targets."linux/x86_64"]
+runner = "ubuntu-24.04"
+mio_version = "2.1.0"
+mio_asset = "mio-2.1.0-linux-amd64-full.tar.gz"
+mio_sha256 = "d2e96ead36176899fca89fb3ee6f6567d648ffb7f175af56190a151c592f5190"
+mio_binary = "bin/mio"
+
+[targets."macos/arm64"]
+runner = "macos-15"
+mio_version = "2.1.0"
+mio_asset = "mio-2.1.0-darwin-arm64-full.tar.gz"
+mio_sha256 = "a62e33955b5cc96c8fede84dd618146fee5ede6d10566e0022a610c0983203c6"
+mio_binary = "bin/mio"
+
+[targets."windows/x86_64"]
+runner = "windows-2025"
+mio_version = "2.1.0"
+mio_asset = "mio-2.1.0-windows-amd64-full.zip"
+mio_sha256 = "0c396bd355243aceb931aab842704c4cdbab74e101b15ed13ec18ef5f0429e68"
+mio_binary = "bin/mio.exe"
