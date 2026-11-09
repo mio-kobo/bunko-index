@@ -22,6 +22,9 @@ ARCHIVE = re.compile(
     r"https://api\.github\.com/repos/([a-z0-9-]+)/([A-Za-z0-9_.-]+)/releases/assets/[1-9][0-9]{0,19}"
 )
 MAX_RECORD_BYTES = 64 * 1024
+OPERATING_SYSTEMS = ("linux", "macos", "windows")
+ARCHITECTURES = ("x86_64", "arm64")
+TARGET_KEYS = ("runner", "mio_version", "mio_asset", "mio_sha256", "mio_binary")
 Release = tuple[str, str]
 
 
@@ -37,6 +40,7 @@ class Issue:
 class Package:
     path: str
     dependencies: tuple[Release, ...]
+    platforms: frozenset[str] = frozenset()  # "os/arch" targets the release declares
 
 
 def release_label(release):
@@ -106,13 +110,29 @@ def classify_name(name, publisher, namespaces, patterns, distances):
     return "pass", ""
 
 
+SCHEMA_KEYWORDS = {
+    "$schema", "title", "type", "required", "additionalProperties", "properties",
+    "propertyNames", "minProperties", "minLength", "maxLength", "pattern",
+    "enum", "items", "minItems", "uniqueItems",
+}
+
+
 def schema_errors(value, schema, field="metadata"):
-    """Apply the object and string keywords used by the bundled JSON Schema."""
+    """Apply the object, array and string keywords used by the bundled JSON Schema.
+
+    Unsupported keywords raise instead of being ignored, so schema drift cannot
+    silently weaken validation.
+    """
+    unknown = schema.keys() - SCHEMA_KEYWORDS
+    if unknown:
+        raise ValueError(f"unsupported schema keyword(s): {', '.join(sorted(unknown))}")
     kind = schema["type"]
     if kind == "object":
         if not isinstance(value, dict):
             yield field, "must be a table"
             return
+        if len(value) < schema.get("minProperties", 0):
+            yield field, "must not be empty"
         properties = schema.get("properties", {})
         for key in schema.get("required", []):
             if key not in value:
@@ -130,9 +150,29 @@ def schema_errors(value, schema, field="metadata"):
                 extra = schema.get("additionalProperties")
                 if isinstance(extra, dict):
                     yield from schema_errors(item, extra, label)
+    elif kind == "array":
+        if not isinstance(value, list):
+            yield field, "must be an array"
+            return
+        if len(value) < schema.get("minItems", 0):
+            yield field, "must not be empty"
+        for index, item in enumerate(value):
+            yield from schema_errors(item, schema["items"], f"{field}[{index}]")
+        if schema.get("uniqueItems"):
+            # Compare by type and value so 1 and true are distinct, as in JSON.
+            seen = set()
+            for item in value:
+                marker = (type(item).__name__, repr(item))
+                if marker in seen:
+                    yield field, "contains a duplicate entry"
+                    break
+                seen.add(marker)
     elif kind == "string":
         if not isinstance(value, str):
             yield field, "must be a string"
+        elif "enum" in schema and value not in schema["enum"]:
+            allowed = ", ".join(schema["enum"])
+            yield field, f"must be one of: {allowed}"
         elif not schema.get("minLength", 0) <= len(value) <= schema.get("maxLength", len(value)):
             yield field, "length is outside the allowed range"
         elif "pattern" in schema and not re.search(schema["pattern"], value):
@@ -191,8 +231,27 @@ def working_entries(root):
     return entries
 
 
+def load_targets(policies=None):
+    """Return the repository-owned map of "os/arch" -> test target settings."""
+    document = read_toml(((policies or INDEX_HOME / "policies") / "platform-targets.toml").read_bytes())
+    targets = document["targets"]
+    for name, rule in targets.items():
+        os_name, _, arch = name.partition("/")
+        if (os_name not in OPERATING_SYSTEMS or arch not in ARCHITECTURES
+                or not all(isinstance(rule.get(key), str) and rule[key] for key in TARGET_KEYS)
+                or rule.keys() - set(TARGET_KEYS)):
+            raise ValueError(f"invalid platform target {name!r}")
+    return targets
+
+
+def declared_targets(document):
+    """Flatten a validated [platforms] table to a sorted tuple of "os/arch"."""
+    return tuple(sorted(f"{os_name}/{arch}"
+                        for os_name, archs in document["platforms"].items() for arch in archs))
+
+
 def validate_records(root, entries, base, settings, author_id=None):
-    schema, namespaces, patterns, distances, authorized = settings
+    schema, namespaces, patterns, distances, authorized, targets = settings
     packages = {}
     invalid = {}
     issues = []
@@ -265,8 +324,17 @@ def validate_records(root, entries, base, settings, author_id=None):
             invalid[expected] = message
             continue
 
+        declared = declared_targets(document)
+        unsupported = [target for target in declared if target not in targets]
+        if unsupported:
+            message = (f"unsupported platform target(s): {', '.join(unsupported)}; "
+                       f"V1 targets are {', '.join(sorted(targets))}")
+            issues.append(Issue("BUNKO_E_PLATFORM", path, message))
+            invalid[expected] = message
+            continue
+
         dependencies = tuple(sorted(document["dependencies"].items()))
-        packages[key] = Package(path, dependencies)
+        packages[key] = Package(path, dependencies, frozenset(declared))
     return packages, invalid, issues
 
 
@@ -302,6 +370,18 @@ def check_graph(roots, packages, invalid, revoked, known_names):
         label = release_label(key)
         return f"{path_to(parent)} -> {label}" if parent is not None else label
 
+    def platform_issues(key, parent, parents, packages, source, incoming_path):
+        """Every release in a closure must support every target of the root that reached it."""
+        top = parent
+        while parents[top] is not None:
+            top = parents[top]
+        missing = sorted(packages[top].platforms - packages[key].platforms)
+        if missing:
+            declared = ", ".join(sorted(packages[key].platforms))
+            yield Issue("BUNKO_E_PLATFORM_DEPENDENCY", source,
+                        f"{incoming_path(key, parent)} does not declare {', '.join(missing)} "
+                        f"required by {release_label(top)} (declares: {declared})")
+
     pending = [(root, None, False) for root in reversed(roots)]
     while pending:
         key, parent, leaving = pending.pop()
@@ -325,6 +405,8 @@ def check_graph(roots, packages, invalid, revoked, known_names):
         if key in active:
             issues.append(Issue("BUNKO_E_CYCLE", source, incoming_path(key, parent)))
             continue
+        if parent is not None:
+            issues.extend(platform_issues(key, parent, parents, packages, source, incoming_path))
         if key in visited:
             continue
 
@@ -371,7 +453,7 @@ def settings_for(root, base_ref, author_id):
         if not isinstance(advisory, str) or not re.fullmatch(r"https://[^\s/]+/[^\s]+", advisory):
             raise ValueError(f"revocation for {key!r} requires a public HTTPS advisory URL")
         revoked[parse_release(key)] = advisory
-    return (schema, namespaces, patterns, distances, authorized), revoked
+    return (schema, namespaces, patterns, distances, authorized, load_targets(policies)), revoked
 
 
 def report(issue, github):

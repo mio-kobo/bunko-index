@@ -13,4 +13,9 @@ license = "MIT"
 min = "2.0.0"
 before = "3.0.0"
 
+[platforms]
+linux = ["x86_64"]
+macos = ["arm64"]
+windows = ["x86_64"]
+
 [dependencies]

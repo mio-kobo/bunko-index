@@ -12,6 +12,8 @@ from validate import damerau_levenshtein  # noqa: E402
 
 
 FIXTURE = (INDEX / "tests/fixtures/package.toml").read_text(encoding="utf-8")
+PLATFORMS = '[platforms]\nlinux = ["x86_64"]\nmacos = ["arm64"]\nwindows = ["x86_64"]\n'
+ALL = {"linux": ["x86_64"], "macos": ["arm64"], "windows": ["x86_64"]}
 
 
 class IndexTests(unittest.TestCase):
@@ -22,7 +24,8 @@ class IndexTests(unittest.TestCase):
         for directory in ("tools", "schemas", "policies"):
             shutil.copytree(INDEX / directory, self.root / directory)
 
-    def package(self, name="alice/json", version="1.0.0", *, path=None, publisher=None, deps=None):
+    def package(self, name="alice/json", version="1.0.0", *, path=None, publisher=None, deps=None,
+                platforms=None):
         namespace, package = name.split("/", 1)
         publisher = publisher or namespace
         doc = (FIXTURE.replace('name = "alice/json"', f"name = {json.dumps(name)}")
@@ -30,6 +33,9 @@ class IndexTests(unittest.TestCase):
                .replace('publisher = "github:alice"', f'publisher = "github:{publisher}"')
                .replace("github.com/alice/json", f"github.com/{publisher}/{package}")
                .replace("github.com/repos/alice/json", f"github.com/repos/{publisher}/{package}"))
+        if platforms is not None:
+            block = "".join(f"{os_name} = {json.dumps(archs)}\n" for os_name, archs in platforms.items())
+            doc = doc.replace(PLATFORMS, "[platforms]\n" + block)
         for dependency, exact in (deps or {}).items():
             doc += f"{json.dumps(dependency)} = {json.dumps(exact)}\n"
         record = self.root / (path or f"packages/{name}/{version}.toml")
@@ -256,6 +262,122 @@ class IndexTests(unittest.TestCase):
         output = self.validate("--github", code="BUNKO_E_RECORD")
         self.assertIn("bad%2C%3A%25%0A", output)
         self.assertEqual(len(output.splitlines()), 1)
+
+    def test_platforms_are_required_and_nonempty(self):
+        for label, text in (("missing", ""), ("empty", "[platforms]\n")):
+            with self.subTest(case=label):
+                record = self.package()
+                record.write_text(FIXTURE.replace(PLATFORMS, text), encoding="utf-8")
+                output = self.validate(code="BUNKO_E_SCHEMA")
+                self.assertIn("platforms", output)
+
+    def test_invalid_platform_declarations(self):
+        cases = {
+            "unknown os": ('linux = ["x86_64"]\nfreebsd = ["x86_64"]', "is not an allowed field"),
+            "darwin alias": ('darwin = ["arm64"]', "is not an allowed field"),
+            "win32 alias": ('win32 = ["x86_64"]', "is not an allowed field"),
+            "unknown arch": ('linux = ["riscv64"]', "must be one of"),
+            "amd64 alias": ('linux = ["amd64"]', "must be one of"),
+            "x64 alias": ('windows = ["x64"]', "must be one of"),
+            "aarch64 alias": ('linux = ["aarch64"]', "must be one of"),
+            "wildcard arch": ('linux = ["*"]', "must be one of"),
+            "wildcard os": ('"*" = ["x86_64"]', "is not an allowed field"),
+            "empty array": ('linux = []', "must not be empty"),
+            "duplicate": ('linux = ["x86_64", "x86_64"]', "duplicate"),
+            "string not array": ('linux = "x86_64"', "must be an array"),
+            "number member": ('linux = [1]', "must be a string"),
+            "uppercase": ('linux = ["X86_64"]', "must be one of"),
+        }
+        for label, (body, message) in cases.items():
+            with self.subTest(case=label):
+                record = self.package()
+                record.write_text(FIXTURE.replace(PLATFORMS, "[platforms]\n" + body + "\n"), encoding="utf-8")
+                self.assertIn(message, self.validate(code="BUNKO_E_SCHEMA"))
+
+    def test_platforms_must_be_a_table_without_extra_nesting(self):
+        for text in ('platforms = ["linux"]\n', '[platforms.linux]\narch = "x86_64"\n'):
+            with self.subTest(text=text):
+                record = self.package()
+                body = FIXTURE.replace(PLATFORMS, "")
+                body = body.replace("[dependencies]", text + "\n[dependencies]") if text.startswith("[") \
+                    else text + body
+                record.write_text(body, encoding="utf-8")
+                self.validate(code="BUNKO_E_SCHEMA")
+
+    def test_valid_one_and_multi_platform_packages(self):
+        self.package("alice/one", platforms={"linux": ["x86_64"]})
+        self.package("alice/two", platforms={"macos": ["arm64"], "windows": ["x86_64"]})
+        self.package("alice/all", platforms=ALL)
+        self.assertIn("Validated 3", self.validate())
+
+    def test_syntactically_valid_targets_without_released_mio_are_rejected(self):
+        for os_name, arch in (("linux", "arm64"), ("macos", "x86_64"), ("windows", "arm64")):
+            with self.subTest(target=f"{os_name}/{arch}"):
+                self.package(platforms={os_name: [arch]})
+                output = self.validate(code="BUNKO_E_PLATFORM")
+                self.assertIn(f"{os_name}/{arch}", output)
+
+    def test_mio_compatibility_is_independent_of_platforms(self):
+        record = self.package(platforms={"linux": ["x86_64"]})
+        record.write_text(record.read_text().replace('min = "2.0.0"', 'min = "2.1.0"'))
+        self.validate()
+        record.write_text(record.read_text().replace('before = "3.0.0"', 'before = "2.1.0"'))
+        self.validate(code="BUNKO_E_COMPATIBILITY")
+
+    def test_dependency_closure_must_support_every_declared_target(self):
+        self.package("alice/json", platforms={"linux": ["x86_64"]})
+        self.package("bob/app", platforms={"linux": ["x86_64"], "windows": ["x86_64"]},
+                     deps={"alice/json": "1.0.0"})
+        output = self.validate(code="BUNKO_E_PLATFORM_DEPENDENCY")
+        self.assertIn("bob/app@1.0.0 -> alice/json@1.0.0 does not declare windows/x86_64", output)
+        self.assertIn("required by bob/app@1.0.0", output)
+        self.assertIn("declares: linux/x86_64", output)
+
+    def test_transitive_platform_gap_reports_the_full_chain(self):
+        self.package("alice/leaf", platforms={"linux": ["x86_64"]})
+        self.package("bob/mid", platforms=ALL, deps={"alice/leaf": "1.0.0"})
+        self.package("carol/root", platforms={"macos": ["arm64"]}, deps={"bob/mid": "1.0.0"})
+        output = self.validate(code="BUNKO_E_PLATFORM_DEPENDENCY")
+        self.assertIn("carol/root@1.0.0 -> bob/mid@1.0.0 -> alice/leaf@1.0.0 does not declare macos/arm64", output)
+        self.assertEqual(output.count("BUNKO_E_PLATFORM_DEPENDENCY"), 2)  # carol/root's chain, and bob/mid as its own root
+
+    def test_dependencies_may_support_more_targets_than_the_dependent(self):
+        self.package("alice/json", platforms=ALL)
+        self.package("bob/app", platforms={"macos": ["arm64"]}, deps={"alice/json": "1.0.0"})
+        self.validate()
+
+    def test_combined_roots_check_each_roots_own_targets(self):
+        self.package("alice/json", platforms={"linux": ["x86_64"]})
+        self.package("bob/web", platforms={"linux": ["x86_64"]}, deps={"alice/json": "1.0.0"})
+        self.package("carol/api", platforms={"linux": ["x86_64"], "macos": ["arm64"]})
+        self.validate("--roots", "bob/web@1.0.0", "carol/api@1.0.0")
+        self.package("dan/cli", platforms=ALL, deps={"alice/json": "1.0.0"})
+        self.validate("--roots", "bob/web@1.0.0", "dan/cli@1.0.0", code="BUNKO_E_PLATFORM_DEPENDENCY")
+
+    def test_platform_gap_in_an_already_invalid_or_revoked_dependency_keeps_its_own_error(self):
+        self.package("alice/json", platforms={"linux": ["x86_64"]})
+        self.package("bob/app", platforms=ALL, deps={"alice/json": "1.0.0"})
+        policy = self.root / "policies/revoked-versions.toml"
+        policy.write_text('[revoked]\n"alice/json@1.0.0" = "https://example.org/advisory/1"\n')
+        output = self.validate(code="BUNKO_E_REVOKED")
+        self.assertNotIn("PLATFORM_DEPENDENCY", output)
+        self.package("carol/app", platforms=ALL, deps={"dan/missing": "1.0.0"})
+        self.validate(code="BUNKO_E_MISSING_PACKAGE")
+
+    def test_validator_refuses_schema_keywords_it_does_not_implement(self):
+        schema = self.root / "schemas/package.schema.json"
+        document = json.loads(schema.read_text())
+        document["properties"]["platforms"]["maxProperties"] = 1
+        schema.write_text(json.dumps(document))
+        self.package()
+        output = self.validate(code="BUNKO_E_VALIDATION")
+        self.assertIn("unsupported schema keyword", output)
+
+    def test_platform_policy_must_name_complete_targets(self):
+        policy = self.root / "policies/platform-targets.toml"
+        policy.write_text(policy.read_text().replace('runner = "ubuntu-24.04"\n', "", 1))
+        self.package()
+        self.validate(code="BUNKO_E_VALIDATION")
 
 
 if __name__ == "__main__":
