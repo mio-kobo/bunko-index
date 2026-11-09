@@ -1,0 +1,19 @@
+name = "exmikupro/miobench"
+version = "0.1.0"
+publisher = "github:exmikupro"
+description = "Benchmark measurements, statistics, and reports for Mio"
+repository = "https://github.com/ExMikuPro/miobench"
+source_commit = "762f0e81eed8f3da2f96ff6f1920fbcef3001d86"
+release_id = "439107128"
+archive = "https://api.github.com/repos/ExMikuPro/miobench/releases/assets/727410057"
+sha256 = "228dbb63d8a70a854797034c4898e80e7403a7b3dac91ba89ad727c2d48f4d5e"
+license = "MIT"
+
+[mio]
+min = "2.1.0"
+before = "2.2.0"
+
+[platforms]
+macos = ["arm64"]
+
+[dependencies]
