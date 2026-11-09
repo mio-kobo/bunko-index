@@ -119,6 +119,29 @@ class ArchiveTests(unittest.TestCase):
         archive.MAX_FILES, archive.MAX_TOTAL_BYTES = original[1], 5
         self.reject({"a.mio": b"123", "b.mio": b"456"}, "extracted size")
 
+    def test_archive_root_is_the_package_root_and_wrapper_directories_are_not_stripped(self):
+        self.extract({"pkg-1.0.0/pkg.mio": b"", "pkg-1.0.0/pkg_test.mio": PASSING_TEST.encode()})
+        out = self.dir / "out"
+        self.assertTrue((out / "pkg-1.0.0/pkg.mio").is_file())
+        self.assertFalse((out / "pkg.mio").exists())
+        # Nothing at the package root: tests would run as the nested package alice/json/pkg-1.0.0.
+        self.assertEqual(archive.discover_tests(out), ["pkg-1.0.0/pkg_test.mio"])
+
+    def test_root_level_layout_extracts_at_the_package_root(self):
+        self.extract({"pkg.mio": b"", "pkg_test.mio": PASSING_TEST.encode()})
+        self.assertEqual(archive.discover_tests(self.dir / "out"), ["pkg_test.mio"])
+
+    def test_wrapper_layout_runs_tests_in_the_wrong_package_directory(self):
+        # The prepared manifest lists tests relative to the package root, so a wrapper
+        # directory is visible to reviewers as a nested path instead of being hidden.
+        fetcher = FakeFetcher()
+        index = Index(self, fetcher)
+        path = index.add("alice/json", files={"json-1.0.0/json.mio": b"", "json-1.0.0/json_test.mio": PASSING_TEST.encode()})
+        work = index.scratch / "work"
+        manifest = ci.prepare(index.root, index.commit("add"), path, "linux/x86_64", work, fetcher, fake_toolchain(fetcher))
+        self.assertEqual(manifest["tests"], ["json-1.0.0/json_test.mio"])
+        self.assertFalse((Path(manifest["bunko_root"]) / "alice/json/json.mio").exists())
+
     def test_refuses_an_existing_destination(self):
         (self.dir / "out").mkdir()
         with self.assertRaises(archive.ArchiveError):

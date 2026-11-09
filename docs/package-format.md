@@ -108,7 +108,10 @@ non-executable UTF-8 text files named with letters, digits, `.`, `_` and `-`:
 `README` (optionally with a `-suffix`). Symlinks, hard links, device files,
 absolute or `..` paths, executable modes, native binaries, scripts, install
 hooks, case-insensitive name collisions and Windows reserved names are rejected.
-Mio imports the package as `<namespace>/<package>`.
+Archives may hold at most 2000 files, 8 MiB per file and 64 MiB in total. Mio
+imports the package as `<namespace>/<package>`, so its source files belong at
+the archive root. A wrapper directory such as `pkg-1.0.0/` is not stripped: its
+files would sit one level deeper and could not be imported as the package.
 
 ## Tests
 

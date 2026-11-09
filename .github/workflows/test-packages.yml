@@ -124,11 +124,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - name: Require every package job to pass
         env:
           PLAN: ${{ needs.plan.result }}
           TEST: ${{ needs.test.result }}
           TOOLING: ${{ needs.tooling.result }}
+          HAS_PACKAGES: ${{ needs.plan.outputs.has_packages }}
         run: |
-          echo "plan=$PLAN test=$TEST tooling=$TOOLING"
-          [ "$PLAN" = success ] && [ "$TOOLING" = success ] && { [ "$TEST" = success ] || [ "$TEST" = skipped ]; }
+          # A skipped test job passes only when the plan reported no new records.
+          python3 -I tools/bunko_aggregate.py --plan "$PLAN" --test "$TEST" \
+            --tooling "$TOOLING" --has-packages "$HAS_PACKAGES"

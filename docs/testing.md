@@ -68,7 +68,9 @@ Each job writes a table to the GitHub step summary and emits annotations with th
 failing test names and messages. Jobs use `fail-fast: false`, so one failing
 target does not hide the others. Jobs time out after 25 minutes and a
 superseded push cancels the previous run. The final `Package tests` job passes
-only if planning and every matrix job passed.
+only if planning and tooling passed and either every matrix job passed or the
+plan explicitly reported no new package records. A skipped matrix for a PR that
+does add records fails.
 
 The `Test tooling` jobs run this repository's own tests on all three runners
 against the real pinned compiler, so a broken harness fails CI instead of
